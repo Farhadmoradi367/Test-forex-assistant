@@ -66,4 +66,3 @@ def analyze_market_structure():
 
 if __name__ == "__main__":
     analyze_market_structure()
-    
