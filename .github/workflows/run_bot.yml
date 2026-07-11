@@ -1,0 +1,27 @@
+name: Run Forex Bot Hourly
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # یعنی رأس هر ساعت (دقیقه 0) اجرا شو
+  workflow_dispatch:      # این دکمه اجرای دستی را هم به ما می‌دهد
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install requests
+
+    - name: Run Python script
+      run: python testprice.py
+      
