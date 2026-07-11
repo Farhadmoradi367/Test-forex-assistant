@@ -1,44 +1,59 @@
 import requests
 import json
-import time  # ۱. ابزار زمان پایتون را وارد می‌کنیم
+import sys
 
 TWELVE_DATA_API_KEY = "0ae022a265924aa98ec6084f6de7b353"
 PUSHBULLET_API_KEY = "o.1xrZgZHp6t5M2dTdnqztZzMd5kVzDzVs"
 symbol = "EUR/USD"
 
-print("🚀 دستیار فارکس فرهاد روشن شد و کار خود را آغاز کرد...")
-
-# ۲. این حلقه به زبان پایتون می‌گوید: این کار را تا ابد تکرار کن!
-while True:
-    
-    # --- بخش دریافت قیمت ---
+def get_forex_price():
+    """دریافت قیمت لحظه‌ای"""
     url_twelve = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={TWELVE_DATA_API_KEY}"
-    
     try:
-        response = requests.get(url_twelve)
+        response = requests.get(url_twelve, timeout=10)
+        response.raise_for_status()
         data = response.json()
-        eurusd_price = data.get("price", "نامشخص")
-    except:
-        eurusd_price = "نامشخص"
+        return data.get("price")
+    except Exception as e:
+        print(f"❌ خطا در دریافت قیمت: {e}")
+        return None
 
-    # --- بخش ارسال نوتیفیکیشن ---
-    if eurusd_price != "نامشخص":
-        push_url = "https://api.pushbullet.com/v2/pushes"
-        headers = {
-            "Access-Token": PUSHBULLET_API_KEY,
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "type": "note",
-            "title": "💰 قیمت لحظه‌ای EUR/USD",
-            "body": f"قیمت فعلی یورو به دلار: {eurusd_price}"
-        }
-        requests.post(push_url, headers=headers, data=json.dumps(payload))
-        print(f"✅ قیمت {eurusd_price} ارسال شد. رفتن به خواب برای ۱ ساعت دیگر...")
+def send_notification(price):
+    """ارسال نوتیفیکیشن"""
+    push_url = "https://api.pushbullet.com/v2/pushes"
+    headers = {
+        "Access-Token": PUSHBULLET_API_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "type": "note",
+        "title": "💰 قیمت لحظه‌ای EUR/USD",
+        "body": f"قیمت فعلی یورو به دلار: {price}"
+    }
+    try:
+        response = requests.post(push_url, headers=headers, 
+                               data=json.dumps(payload), timeout=10)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"❌ خطا در ارسال نوتیفیکیشن: {e}")
+        return False
+
+def main():
+    print("🚀 دستیار فارکس فرهاد روشن شد و کار خود را آغاز کرد...")
+    price = get_forex_price()
+    
+    if price:
+        print(f"💰 قیمت دریافت شد: {price}")
+        if send_notification(price):
+            print(f"✅ قیمت {price} ارسال شد. کار با موفقیت پایان یافت.")
+        else:
+            print("⚠️ ارسال نوتیفیکیشن ناموفق بود.")
+            sys.exit(1)
     else:
-        print("⚠️ خطا در دریافت قیمت. ۱۰ ثانیه دیگر دوباره تلاش می‌کنم...")
-        time.sleep(10)
-        continue
+        print("❌ دریافت قیمت ناموفق بود.")
+        sys.exit(1)
 
-    # ۳. مهم‌ترین خط: به پایتون می‌گوییم ۳۶۰۰ ثانیه (معادل ۱ ساعت) کپه بکش و هیچ کاری نکن!
-    time.sleep(7200)
+if __name__ == "__main__":
+    main()
+    
