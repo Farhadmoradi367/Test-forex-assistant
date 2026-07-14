@@ -3,13 +3,14 @@ import pandas as pd
 import numpy as np
 import sys
 import json
+from datetime import datetime, timedelta
 
 # ======================== تنظیمات اصلی ========================
 SYMBOL = "EUR/USD"
 TWELVEDATA_API_KEY = "0ae022a265924aa98ec6084f6de7b353"
 TWELVEDATA_BASE_URL = "https://api.twelvedata.com/time_series"
 
-PUSHBULLET_TOKEN = "o.S9w7mC9uR7v60q8A8bH7k2N9z7X5c3V1" # توکن فعال شما
+PUSHBULLET_TOKEN = "o.S9w7mC9uR7v60q8A8bH7k2N9z7X5c3V1"
 PUSHBULLET_URL = "https://api.pushbullet.com/v2/pushes"
 
 RISK_REWARD_RATIO = 2.0
@@ -83,67 +84,158 @@ def confirm_candle(df):
     total = last['high'] - last['low']
     return total > 0 and (body / total) >= MIN_CANDLE_BODY_RATIO
 
-# ======================== موتور سیگنال ========================
-def run_analysis():
-    print("🔄 چرخه تحلیل هوشمند SMC (15 دقیقه) شروع شد...")
-    df_1h = fetch_klines(SYMBOL, "1h", limit=100)
-    df_15m = fetch_klines(SYMBOL, "15min", limit=200)
+# ======================== ارسال نوتیفیکیشن گزارش وضعیت ========================
+def send_status_report(trend_4h, status_msg):
+    iran_time = datetime.utcnow() + timedelta(hours=3, minutes=30)
+    time_str = iran_time.strftime('%H:%M')
     
-    if df_1h is None or df_15m is None:
-        print("❌ خطا در دریافت اطلاعات از سرور.")
-        return
+    trend_emoji = "⚪"
+    if trend_4h == "BULLISH": trend_emoji = "📈"
+    elif trend_4h == "BEARISH": trend_emoji = "📉"
+    
+    title = f"🤖 گزارش وضعیت ربات EUR/USD"
+    body = (
+        f"وضعیت: فعال و در حال بررسی چارت ⏱️\n"
+        f"روند کلی چارت (4H): {trend_emoji} {trend_4h}\n"
+        f"آخرین تحلیل: {status_msg}\n"
+        f"ساعت به وقت ایران: {time_str}"
+    )
+    
+    headers = {"Access-Token": PUSHBULLET_TOKEN, "Content-Type": "application/json"}
+    payload = {"type": "note", "title": title, "body": body}
+    try:
+        requests.post(PUSHBULLET_URL, json=payload, headers=headers, timeout=10)
+        print(f"📱 گزارش وضعیت ربات با موفقیت به گوشی ارسال شد.")
+    except Exception as e:
+        print(f"⚠️ خطا در ارسال گزارش وضعیت: {e}")
 
-    htf_trend = get_htf_bias(df_1h)
-    print(f"📈 روند تایم‌فریم بالا (1H): {htf_trend}")
-    if htf_trend == "NEUTRAL": return
+# ======================== موتور سیگنال برای هر تایم‌فریم ========================
+def analyze_timeframe(signal_tf, htf_tf, htf_lookback=100, signal_lookback=200):
+    print(f"\n{'='*50}")
+    print(f"🔍 تحلیل تایم‌فریم {signal_tf} با روند {htf_tf}")
+    print(f"{'='*50}")
+    
+    df_htf = fetch_klines(SYMBOL, htf_tf, limit=htf_lookback)
+    df_signal = fetch_klines(SYMBOL, signal_tf, limit=signal_lookback)
+    
+    if df_htf is None or df_signal is None:
+        print(f"❌ خطا در دریافت اطلاعات برای {signal_tf}")
+        if signal_tf == "4h":
+            send_status_report("نامشخص", "خطا در دریافت داده‌ها از وب‌سایت مرجع")
+        return False
 
-    swings_high, swings_low = find_swings(df_15m, lookback=7)
-    if not swings_high or not swings_low: return
+    htf_trend = get_htf_bias(df_htf)
+    print(f"📈 روند تایم‌فریم بالا ({htf_tf}): {htf_trend}")
+    if htf_trend == "NEUTRAL":
+        print(f"⏸️ روند خنثی - صرف‌نظر از {signal_tf}")
+        if signal_tf == "4h":
+            send_status_report(htf_trend, "بازار روند مشخصی ندارد (رنج)")
+        return False
 
-    liquidity = is_liquidity_swept(df_15m, swings_high, swings_low)
+    swings_high, swings_low = find_swings(df_signal, lookback=7)
+    if not swings_high or not swings_low:
+        print(f"⚠️ نوسان‌های کافی در {signal_tf} یافت نشد")
+        if signal_tf == "4h":
+            send_status_report(htf_trend, "نوسان کافی (High/Low) در چارت پیدا نشد")
+        return False
+
+    liquidity = is_liquidity_swept(df_signal, swings_high, swings_low)
     if not liquidity:
-        print("🟢 نقدینگی شکار نشد. خروج امن.")
-        return
+        print(f"🟢 نقدینگی در {signal_tf} شکار نشد")
+        if signal_tf == "4h":
+            send_status_report(htf_trend, "نقدینگی چارت شکار نشد")
+        return False
     print(f"🎯 شکار نقدینگی: {liquidity}")
 
-    mss = check_mss(df_15m, htf_trend, swings_high, swings_low)
-    if not mss: return
+    mss = check_mss(df_signal, htf_trend, swings_high, swings_low)
+    if not mss:
+        print(f"❌ تغییر ساختار بازار در {signal_tf} مشاهده نشد")
+        if signal_tf == "4h":
+            send_status_report(htf_trend, f"نقدینگی شکار شد ({liquidity}) اما ساختار بازار (MSS) تغییر نکرد")
+        return False
+    print(f"✅ تغییر ساختار بازار: {mss}")
 
-    fvgs = detect_fvg(df_15m, lookback=40)
+    fvgs = detect_fvg(df_signal, lookback=40)
     target_fvg = None
     for direction, upper, lower in fvgs:
         if (htf_trend == "BULLISH" and direction == "BULLISH") or (htf_trend == "BEARISH" and direction == "BEARISH"):
             target_fvg = (direction, upper, lower)
             break
             
-    if not target_fvg: return
+    if not target_fvg:
+        print(f"❌ FVG هم‌جهت در {signal_tf} یافت نشد")
+        if signal_tf == "4h":
+            send_status_report(htf_trend, "تغییر ساختار رخ داد اما FVG هم‌جهت پیدا نشد")
+        return False
+    print(f"✅ FVG پیدا شد: {target_fvg[0]}")
 
-    last_close = df_15m['close'].iloc[-1]
+    last_close = df_signal['close'].iloc[-1]
     fvg_dir, fvg_upper, fvg_lower = target_fvg
+    last_candle_confirmed = confirm_candle(df_signal)
 
-    # صادر کردن سیگنال نهایی
-    if fvg_dir == "BULLISH" and fvg_lower <= last_close <= fvg_upper and confirm_candle(df_15m) and last_close > df_15m['open'].iloc[-1]:
+    if not last_candle_confirmed:
+        print(f"❌ شمع آخر در {signal_tf} تأیید نشد")
+        if signal_tf == "4h":
+            send_status_report(htf_trend, "الگوها تکمیل شدند اما کندل تایید نهایی صادر نشد")
+        return False
+
+    # بخش صدور سیگنال واقعی
+    if fvg_dir == "BULLISH" and fvg_lower <= last_close <= fvg_upper and last_close > df_signal['open'].iloc[-1]:
         sl = min(swings_low[-1][1], fvg_lower - (fvg_upper - fvg_lower) * 0.2)
         entry = last_close
         tp = entry + (entry - sl) * RISK_REWARD_RATIO
-        send_notification("BUY", entry, sl, tp)
+        send_notification("BUY", entry, sl, tp, signal_tf)
+        return True
 
-    elif fvg_dir == "BEARISH" and fvg_lower <= last_close <= fvg_upper and confirm_candle(df_15m) and last_close < df_15m['open'].iloc[-1]:
+    elif fvg_dir == "BEARISH" and fvg_lower <= last_close <= fvg_upper and last_close < df_signal['open'].iloc[-1]:
         sl = max(swings_high[-1][1], fvg_upper + (fvg_upper - fvg_lower) * 0.2)
         entry = last_close
         tp = entry - (sl - entry) * RISK_REWARD_RATIO
-        send_notification("SELL", entry, sl, tp)
+        send_notification("SELL", entry, sl, tp, signal_tf)
+        return True
+    
+    print(f"⏸️ شرایط نهایی برای {signal_tf} برآورده نشد")
+    if signal_tf == "4h":
+        send_status_report(htf_trend, "قیمت خارج از محدوده معاملاتی FVG قرار دارد")
+    return False
 
-def send_notification(action, entry, sl, tp):
+# ======================== ارسال نوتیفیکیشن سیگنال ========================
+def send_notification(action, entry, sl, tp, timeframe):
+    iran_time = datetime.utcnow() + timedelta(hours=3, minutes=30)
+    time_str = iran_time.strftime('%H:%M')
+    
     emoji = "🟢" if action == "BUY" else "🔴"
-    title = f"{emoji} سیگنال {action} {SYMBOL} (15Min)"
-    body = f"ورود: {round(entry, 5)}\nحد ضرر: {round(sl, 5)}\nحد سود: {round(tp, 5)}\nنسبت: 1:2\nاستراتژی: FVG + MSS + Sweep"
+    title = f"{emoji} سیگنال {action} {SYMBOL} ({timeframe})"
+    body = f"ورود: {round(entry, 5)}\nحد ضرر: {round(sl, 5)}\nحد سود: {round(tp, 5)}\nنسبت: 1:2\nاستراتژی: FVG + MSS + Sweep\nزمان ایران: {time_str}"
     
     headers = {"Access-Token": PUSHBULLET_TOKEN, "Content-Type": "application/json"}
     payload = {"type": "note", "title": title, "body": body}
-    requests.post(PUSHBULLET_URL, json=payload, headers=headers)
-    print(f"📱 اعلان سیگنال {action} با موفقیت به گوشی فرستاده شد!")
+    try:
+        requests.post(PUSHBULLET_URL, json=payload, headers=headers, timeout=10)
+        print(f"📱 اعلان سیگنال {action} ({timeframe}) با موفقیت ارسال شد!")
+    except Exception as e:
+        print(f"⚠️ خطا در ارسال نوتیفیکیشن: {e}")
+
+# ======================== اجرای اصلی ========================
+def run_analysis():
+    iran_now = datetime.utcnow() + timedelta(hours=3, minutes=30)
+    print("🔄 چرخه تحلیل هوشمند SMC شروع شد...")
+    print(f"⏰ زمان ایران: {iran_now.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    signals_found = 0
+    
+    # اول تایم فریم ۱ ساعته را بررسی می‌کنیم (روند ۴ ساعته)
+    if analyze_timeframe("1h", "4h", htf_lookback=80, signal_lookback=150):
+        signals_found += 1
+    
+    # سپس ۴ ساعته را بررسی می‌کنیم (روند روزانه). نوتیفیکیشن گزارش وضعیت به این متصل است.
+    if analyze_timeframe("4h", "1day", htf_lookback=60, signal_lookback=120):
+        signals_found += 1
+    
+    if signals_found == 0:
+        print("\n❌ هیچ سیگنالی در هیچ تایم‌فریمی پیدا نشد.")
+    else:
+        print(f"\n✅ مجموع سیگنال‌های صادر شده: {signals_found}")
 
 if __name__ == "__main__":
     run_analysis()
-        
